@@ -1,0 +1,71 @@
+{
+  "cookies": [
+    {
+      "name": "cookiesession1",
+      "value": "678B286E088D8A5D3DA30855E3FB2429",
+      "domain": "gtplsaathi.com",
+      "path": "/",
+      "expires": 1821086208.262026,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "ASP.NET_SessionId",
+      "value": "qexqxqdtpeqwo5wrny2posrg",
+      "domain": "gtplsaathi.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "Fortiweb",
+      "value": "578e02d7282d6ef6eeddbcd28d5eaa6a",
+      "domain": "gtplsaathi.com",
+      "path": "/",
+      "expires": 1789557436.565046,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "storageState": {
+    "cookies": [
+      {
+        "name": "cookiesession1",
+        "value": "678B286E088D8A5D3DA30855E3FB2429",
+        "domain": "gtplsaathi.com",
+        "path": "/",
+        "expires": 1821086208.262026,
+        "httpOnly": true,
+        "secure": false,
+        "sameSite": "Lax"
+      },
+      {
+        "name": "ASP.NET_SessionId",
+        "value": "qexqxqdtpeqwo5wrny2posrg",
+        "domain": "gtplsaathi.com",
+        "path": "/",
+        "expires": -1,
+        "httpOnly": true,
+        "secure": false,
+        "sameSite": "Lax"
+      },
+      {
+        "name": "Fortiweb",
+        "value": "578e02d7282d6ef6eeddbcd28d5eaa6a",
+        "domain": "gtplsaathi.com",
+        "path": "/",
+        "expires": 1789557436.565046,
+        "httpOnly": true,
+        "secure": false,
+        "sameSite": "Lax"
+      }
+    ],
+    "origins": []
+  },
+  "timestamp": "2026-09-16T09:17:22.108Z",
+  "baseUrl": "https://cg.hathway-connect.com"
+}
