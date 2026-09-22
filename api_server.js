@@ -231,5 +231,5 @@ app.get('/status/:jobId', (req, res) => {
     res.json({ jobId: req.params.jobId, ...job });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Automation API listening on http://localhost:${PORT}`));
