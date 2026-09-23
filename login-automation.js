@@ -1441,6 +1441,461 @@
 
 // last +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+// const { chromium } = require('playwright');
+// const fs = require('fs');
+// const path = require('path');
+// const HybridCaptchaSolver = require('./hybrid-captcha-solver'); // <-- keep your existing file
+
+// class LoginAutomation {
+//     /**
+//      * @param {Object} opts
+//      * @param {string} opts.username
+//      * @param {string} opts.password
+//      * @param {string} opts.stbNumber   - STB serial number to search for on the Renew page
+//      * @param {boolean} [opts.headless] - run browser headless (default false, good for debugging)
+//      * @param {string} [opts.label]     - label used in console logs, defaults to username.
+//      *                                    Important when running many accounts at once so you
+//      *                                    can tell their logs apart.
+//      */
+//     constructor({ username, password, stbNumber, headless = false, label = '' } = {}) {
+//         this.username = username;
+//         this.password = password;
+//         this.stbNumber = stbNumber;
+//         this.headless = headless;
+//         this.label = label || username || 'automation';
+
+//         this.browser = null;
+//         this.context = null;
+//         this.page = null;
+//         this.baseUrl = 'https://gtplsaathi.com/';
+//         this.captchaSolver = new HybridCaptchaSolver();
+//     }
+
+//     log(msg) {
+//         console.log(`[${this.label}] ${msg}`);
+//     }
+
+//     async initialize() {
+//         // NOTE: each LoginAutomation instance launches its OWN browser + context.
+//         // That's what makes it safe to run many of these in parallel (see run-automation.js
+//         // and api-server.js) - they never share cookies/session/state with each other.
+//         this.browser = await chromium.launch({
+//             headless: this.headless,
+//             slowMo: this.headless ? 0 : 300,
+//         });
+
+//         this.context = await this.browser.newContext({
+//             viewport: { width: 1280, height: 720 },
+//             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+//         });
+
+//         this.page = await this.context.newPage();
+//     }
+
+//     async navigateToLogin() {
+//         this.log('Navigating to login page...');
+//         await this.page.goto(this.baseUrl, { waitUntil: 'networkidle' });
+//         await this.page.waitForTimeout(2000);
+//     }
+
+//     async fillCredentials() {
+//         this.log('Filling login credentials...');
+//         await this.page.fill('#txtuser', this.username);
+//         await this.page.fill('#txtpassword', this.password);
+//     }
+
+//     async refreshCaptcha() {
+//         this.log('Refreshing CAPTCHA...');
+//         await this.page.click('#imgRefresh');
+//         await this.page.waitForTimeout(2000);
+//     }
+
+//     async solveCaptcha() {
+//         this.log('Solving CAPTCHA...');
+//         await this.page.waitForSelector('#imgSecurityCode', { timeout: 10000 });
+
+//         const captchaElement = await this.page.$('#imgSecurityCode');
+//         const base64Data = await captchaElement.evaluate((el) => el.src);
+
+//         // Use the label in the filename so parallel runs don't overwrite each other's captcha.png
+//         const captchaPath = path.join(__dirname, `captcha_${this.label}_${Date.now()}.png`);
+//         const base64Image = base64Data.replace(/^data:image\/\w+;base64,/, '');
+//         const imageBuffer = Buffer.from(base64Image, 'base64');
+//         fs.writeFileSync(captchaPath, imageBuffer);
+
+//         const result = await this.captchaSolver.solveCaptcha(imageBuffer, captchaPath);
+//         if (!result.success) {
+//             throw new Error(`CAPTCHA solving failed: ${result.error}`);
+//         }
+
+//         const captchaText = result.captcha;
+//         this.log(`CAPTCHA solved: "${captchaText}" (${result.confidence}% confidence)`);
+//         await this.page.fill('#txtSecurityCode', captchaText);
+
+//         // clean up the captcha screenshot, we don't need it once solved
+//         fs.unlink(captchaPath, () => {});
+
+//         return captchaText;
+//     }
+
+//     async submitForm() {
+//         this.log('Submitting login form...');
+//         await this.page.click('#btn_login');
+
+//         try {
+//             await this.page.waitForLoadState('networkidle', { timeout: 15000 });
+//         } catch (err) {
+//             this.log(`Navigation wait warning: ${err.message}`);
+//         }
+//         await this.page.waitForTimeout(1500);
+
+//         const currentUrl = this.page.url();
+//         this.log(`URL after submit: ${currentUrl}`);
+//         return !currentUrl.toLowerCase().includes('login');
+//     }
+
+//     /**
+//      * Screenshot 1: "Your password is expiring soon" popup with
+//      * "I'll do it later" / "Change password" buttons.
+//      * This popup is NOT guaranteed to show up every login, so we just
+//      * check for it briefly and click through it if present, otherwise move on.
+//      */
+//     async handlePasswordExpiryPopup(timeout = 8000) {
+//         this.log('Checking for password-expiry popup...');
+
+//         // IMPORTANT: isVisible() does NOT wait/poll — it checks once, instantly.
+//         // waitFor({ state: 'visible' }) actually polls until the timeout, which is
+//         // what we need since the popup can take a moment to render after login.
+//         //
+//         // Matching by regex (not an exact string with a straight apostrophe) also
+//         // protects against sites that render the button text with a curly
+//         // apostrophe (’) via &rsquo; — a hardcoded "I'll do it later" would silently
+//         // never match that.
+//         const laterBtn = this.page.getByText(/do it later/i).first();
+
+//         try {
+//             await laterBtn.waitFor({ state: 'visible', timeout });
+//             this.log('Password-expiry popup detected — clicking "I\'ll do it later"');
+//             await laterBtn.click();
+//             await this.page.waitForTimeout(1000);
+//         } catch (err) {
+//             this.log('No password-expiry popup detected, continuing.');
+//         }
+//     }
+
+//     /**
+//      * Screenshot 2 (blank "auto redirect in 5 seconds" screen) is transient and
+//      * disappears on its own within ~5-10s, after which the real dashboard
+//      * (screenshot 3, with "Wallet Balance") appears. We just wait for that
+//      * dashboard marker to show up rather than trying to detect/click anything
+//      * on the redirect screen itself.
+//      */
+//     async waitForDashboard(timeout = 20000) {
+//         this.log('Waiting for dashboard to finish loading...');
+//         try {
+//             // NOTE: "text=Wallet Balance" used to match 2 elements on this site -
+//             // a hidden nav link plus the real visible balance widget - and
+//             // Playwright kept waiting on whichever one it resolved first, which
+//             // could be the hidden one. Racing the URL change against the visible
+//             // logo text avoids that ambiguity entirely.
+//             await Promise.race([
+//                 this.page.waitForURL(/home\.aspx/i, { timeout }),
+//                 this.page.waitForSelector('text=GTPL SAATHI', { timeout }),
+//             ]);
+//             this.log('Dashboard loaded.');
+//         } catch (err) {
+//             this.log(`Dashboard wait warning: ${err.message}`);
+//             // Defensive: if the dashboard never showed up, it's often because the
+//             // password-expiry popup rendered later than expected and is still
+//             // blocking the page. Check for it one more time before giving up.
+//             await this.handlePasswordExpiryPopup(5000);
+//         }
+//         // small buffer in case the redirect splash is still fading out
+//         await this.page.waitForTimeout(1500);
+//     }
+
+//     /**
+//      * Screenshot 4: sidebar item "Renew". We click the text label itself,
+//      * not the dropdown caret next to it, and we scroll it into view first
+//      * since it's further down the sidebar.
+//      */
+//     async clickRenew() {
+//         this.log('Looking for the "Renew" sidebar item...');
+//         const renewItems = this.page.locator('a:text-is("Renew"), li:text-is("Renew"), span:text-is("Renew")');
+
+//         const countBefore = await renewItems.count();
+//         this.log(`Found ${countBefore} element(s) matching "Renew" before click.`);
+
+//         const first = renewItems.first();
+//         await first.scrollIntoViewIfNeeded();
+//         await first.waitFor({ state: 'visible', timeout: 10000 });
+//         await first.click();
+//         this.log('Clicked "Renew" (first match).');
+//         await this.page.waitForTimeout(2000);
+
+//         // Some sidebar menus only *expand* a submenu on the first click of a
+//         // parent item, and the real navigable link (sometimes labelled the
+//         // same, e.g. a child item also called "Renew") only appears after
+//         // that. Do a quick, non-blocking check: if the STB field still isn't
+//         // there, try again - clicking a newly-revealed match if one appeared,
+//         // otherwise just clicking "Renew" a second time.
+//         const stbAlreadyThere = await this.page
+//             .locator('input[placeholder*="STB SERIAL" i], input[placeholder*="STB Serial" i]')
+//             .first()
+//             .isVisible()
+//             .catch(() => false);
+
+//         if (!stbAlreadyThere) {
+//             this.log('STB field not visible yet after first click - trying again...');
+//             const countAfter = await renewItems.count();
+//             if (countAfter > countBefore) {
+//                 this.log(`A new "Renew"-labelled element appeared (${countAfter} total) - clicking the last one.`);
+//                 await renewItems.last().click();
+//             } else {
+//                 await first.click();
+//             }
+//             await this.page.waitForTimeout(2000);
+//         }
+//     }
+
+//     /**
+//      * Screenshot 5: Renew page with "STB SERIAL #" input and "Search" button.
+//      */
+//     async searchStb() {
+//         this.log(`Entering STB serial number: ${this.stbNumber}`);
+//         // case-insensitive, partial match - tolerant of minor spacing/casing
+//         // differences from the literal placeholder text in the screenshot
+//         const stbInput = this.page
+//             .locator('input[placeholder*="STB SERIAL" i], input[placeholder*="STB Serial" i]')
+//             .first();
+
+//         try {
+//             await stbInput.waitFor({ state: 'visible', timeout: 20000 });
+//         } catch (err) {
+//             // We couldn't find it - dump what's actually on the page so we can
+//             // see the real placeholder text/selector instead of guessing again.
+//             const debugPath = path.join(__dirname, `debug_renew_${this.label}_${Date.now()}.png`);
+//             await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
+
+//             const visibleInputs = await this.page
+//                 .$$eval('input', (els) =>
+//                     els
+//                         .filter((e) => e.offsetParent !== null)
+//                         .map((e) => ({ placeholder: e.placeholder, id: e.id, name: e.name }))
+//                 )
+//                 .catch(() => []);
+
+//             this.log(`STB input not found. Debug screenshot saved: ${debugPath}`);
+//             this.log(`Visible inputs on page: ${JSON.stringify(visibleInputs)}`);
+//             this.log(`Current URL: ${this.page.url()}`);
+//             throw err;
+//         }
+
+//         await stbInput.fill(this.stbNumber);
+
+//         // exact match so this doesn't accidentally hit "Advance Search"
+//         const searchBtn = this.page.getByRole('button', { name: 'Search', exact: true });
+//         await searchBtn.click();
+//         this.log('Clicked "Search".');
+//         await this.page.waitForTimeout(3000);
+//     }
+
+//     /**
+//      * Screenshot 6 (search results): a "PACKAGE DETAILS" section lists the
+//      * customer's package(s), each with a checkbox in front of the name, and a
+//      * green "Renew" button below to confirm. This "Renew" is a distinct
+//      * <button> element from the sidebar "Renew" link clicked earlier -
+//      * scoping to role "button" with an exact name keeps the two from colliding.
+//      */
+//     async selectPackagesAndRenew() {
+//         this.log('Waiting for package details to load...');
+//         try {
+//             await this.page.waitForSelector('text=PACKAGE DETAILS', { timeout: 15000 });
+//         } catch (err) {
+//             const debugPath = path.join(__dirname, `debug_packages_${this.label}_${Date.now()}.png`);
+//             await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
+//             this.log(`PACKAGE DETAILS section not found. Debug screenshot saved: ${debugPath}`);
+//             throw err;
+//         }
+
+//         // Confirmed from a live debug dump: the package checkbox is a real
+//         // <input type="checkbox"> from an ASP.NET repeater, with id/name
+//         // containing "chk_cn" (e.g. ContentPlaceHolder1_rptDC_chk_cn_0).
+//         // Targeting that directly is far more reliable than trying to scope
+//         // via the "PACKAGE DETAILS" header text, which wasn't matching it.
+//         let packageCheckboxes = this.page.locator(
+//             'input[type="checkbox"][id*="chk_cn"], input[type="checkbox"][name*="chk_cn"]'
+//         );
+
+//         // The row can render slightly after the header (AJAX), so poll
+//         // instead of checking count() once.
+//         let count = 0;
+//         const deadline = Date.now() + 15000;
+//         while (Date.now() < deadline) {
+//             count = await packageCheckboxes.count();
+//             if (count > 0) break;
+//             await this.page.waitForTimeout(500);
+//         }
+
+//         this.log(`Found ${count} package checkbox(es) via "chk_cn" id/name pattern.`);
+
+//         if (count === 0) {
+//             // Fallback: if that id pattern ever changes, fall back to any
+//             // checkbox on the page.
+//             this.log('No "chk_cn" checkboxes found - falling back to any checkbox on the page.');
+//             packageCheckboxes = this.page.locator('input[type="checkbox"]');
+//             count = await packageCheckboxes.count();
+//             this.log(`Found ${count} checkbox(es) via page-wide fallback.`);
+//         }
+
+//         if (count === 0) {
+//             const debugPath = path.join(__dirname, `debug_packages_${this.label}_${Date.now()}.png`);
+//             await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
+//             this.log(`Debug screenshot: ${debugPath}`);
+//             throw new Error('No package checkbox found on the page. See debug screenshot above.');
+//         }
+
+//         for (let i = 0; i < count; i++) {
+//             const checkbox = packageCheckboxes.nth(i);
+//             const alreadyChecked = await checkbox.isChecked().catch(() => false);
+//             if (!alreadyChecked) {
+//                 await checkbox.check();
+//                 this.log(`Checked package checkbox #${i + 1}.`);
+//             }
+//         }
+
+//         const renewBtn = this.page.getByRole('button', { name: 'Renew', exact: true });
+//         await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
+//         await renewBtn.click();
+//         this.log('Clicked the green "Renew" confirm button.');
+//         await this.page.waitForTimeout(3000);
+//     }
+
+//     /**
+//      * After confirming renewal, the site lands back on the Renew search page
+//      * (STB + account prefilled), sometimes showing a transient Oracle error
+//      * banner ("ORA-01422: ...") which we ignore. We click Search once to
+//      * pull fresh details and read whatever Due Date is showing right away -
+//      * no waiting for Status to flip to ACTIVE.
+//      */
+//     async confirmRenewalAndGetDueDate() {
+//         this.log('Fetching updated due date...');
+
+//         const searchBtn = this.page.getByRole('button', { name: 'Search', exact: true });
+//         await searchBtn.waitFor({ state: 'visible', timeout: 15000 });
+//         await searchBtn.click();
+//         this.log('Clicked "Search" to pull the updated details.');
+//         await this.page.waitForTimeout(3000);
+
+//         const pageText = await this.page.evaluate(() => document.body.innerText).catch(() => '');
+
+//         const statusMatch = pageText.match(/Status\s*:\s*([A-Za-z]+)/i);
+//         const status = statusMatch ? statusMatch[1].toUpperCase() : null;
+
+//         const dueDateMatch = pageText.match(/Due Date\s*:\s*([\d/.\-]+)/i);
+//         const dueDate = dueDateMatch ? dueDateMatch[1].trim() : null;
+
+//         this.log(`Status: ${status}, Due date: ${dueDate}`);
+
+//         if (!dueDate) {
+//             const debugPath = path.join(__dirname, `debug_duedate_${this.label}_${Date.now()}.png`);
+//             await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
+//             this.log(`Could not find a Due Date on the page. Debug screenshot saved: ${debugPath}`);
+//         }
+
+//         return { status, dueDate };
+//     }
+
+//     async close() {
+//         if (this.browser) {
+//             await this.browser.close();
+//             this.log('Browser closed.');
+//         }
+//     }
+
+//     /**
+//      * Full end-to-end flow for ONE account: login -> popup -> dashboard ->
+//      * Renew -> search STB. Retries the whole login on failure (fresh captcha
+//      * each time) up to maxRetries.
+//      */
+//     async run(maxRetries = 3) {
+//         let attempts = 0;
+
+//         while (attempts < maxRetries) {
+//             attempts++;
+//             let loggedInThisAttempt = false;
+//             try {
+//                 this.log(`--- Attempt ${attempts} of ${maxRetries} ---`);
+
+//                 await this.navigateToLogin();
+//                 await this.fillCredentials();
+//                 const captchaText = await this.solveCaptcha();
+//                 const loggedIn = await this.submitForm();
+
+//                 if (!loggedIn) {
+//                     this.log('Login did not succeed, refreshing CAPTCHA and retrying...');
+//                     await this.refreshCaptcha();
+//                     continue;
+//                 }
+
+//                 loggedInThisAttempt = true;
+
+//                 await this.handlePasswordExpiryPopup();
+//                 await this.waitForDashboard();
+//                 await this.clickRenew();
+//                 await this.searchStb();
+//                 await this.selectPackagesAndRenew();
+//                 const renewalResult = await this.confirmRenewalAndGetDueDate();
+
+//                 return {
+//                     success: true,
+//                     attempts,
+//                     captcha: captchaText,
+//                     username: this.username,
+//                     password: this.password,
+//                     stb: this.stbNumber,
+//                     status: renewalResult.status,
+//                     dueDate: renewalResult.dueDate,
+//                     finalUrl: this.page.url(),
+//                 };
+//             } catch (err) {
+//                 this.log(`Attempt ${attempts} failed: ${err.message}`);
+
+//                 const pageIsClosed = this.page?.isClosed?.() || /has been closed/i.test(err.message);
+//                 if (pageIsClosed) {
+//                     this.log('Browser/page closed unexpectedly - stopping retries for this run instead of continuing on a dead page.');
+//                     this.log('(This is often the site itself closing the session after several rapid login attempts. Consider spacing out retries or lowering concurrency if this happens often.)');
+//                     return { success: false, attempts, error: err.message, username: this.username, password: this.password, stb: this.stbNumber };
+//                 }
+
+//                 if (loggedInThisAttempt) {
+//                     // We were already past login when this failed - almost
+//                     // certainly a selector/timing issue on a post-login page,
+//                     // not a bad CAPTCHA. Re-attempting a full fresh login
+//                     // won't fix that, and repeated rapid logins risk the site
+//                     // closing the browser as an anti-automation measure. Fail
+//                     // fast with the debug info already logged above instead.
+//                     this.log('Failure happened after a successful login - not retrying with a fresh login. Check the debug screenshot/log above for the real cause.');
+//                     return { success: false, attempts, error: err.message, failedAfterLogin: true, username: this.username, password: this.password, stb: this.stbNumber };
+//                 }
+
+//                 if (attempts >= maxRetries) {
+//                     return { success: false, attempts, error: err.message, username: this.username, password: this.password, stb: this.stbNumber };
+//                 }
+//                 await this.page.waitForTimeout(2000).catch(() => {});
+//             }
+//         }
+
+//         return { success: false, attempts, username: this.username, password: this.password, stb: this.stbNumber };
+//     }
+// }
+
+// module.exports = LoginAutomation;
+
+
+// hehhehehehehhe +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -1806,6 +2261,75 @@ class LoginAutomation {
         return { status, dueDate };
     }
 
+    /**
+     * Tries to read any error banner the WEBSITE ITSELF is showing (e.g. the
+     * "-1422:ORA-01422: ..." banner from a backend/database error) so the
+     * final result can surface the real reason instead of an internal or
+     * technical one.
+     */
+    async getOnScreenErrorText() {
+        try {
+            return await this.page.evaluate(() => {
+                const bodyText = document.body ? document.body.innerText : '';
+
+                // The Oracle-style error banner seen on this site, e.g.
+                // "-1422:ORA-01422: exact fetch returns more than requested number of rows"
+                const oraMatch = bodyText.match(/-?\d*:?ORA-\d+:[^\n]+/i);
+                if (oraMatch) return oraMatch[0].trim();
+
+                // Generic fallback: a short, visible element styled as an
+                // error/danger/alert near the top of the page.
+                const els = Array.from(document.querySelectorAll('[class*="error" i], [class*="danger" i], [class*="alert" i]'));
+                for (const el of els) {
+                    const text = (el.innerText || '').trim();
+                    if (text && text.length > 3 && text.length < 200 && el.offsetParent !== null) {
+                        return text;
+                    }
+                }
+                return null;
+            });
+        } catch (_) {
+            return null;
+        }
+    }
+
+    /**
+     * Turns a caught error (plus whatever the website itself is showing on
+     * screen, if anything) into a short, non-technical message suitable for
+     * reporting back through the API. Deliberately avoids selector/button-
+     * level detail (e.g. never says "could not click element X").
+     */
+    async buildFailureMessage(err) {
+        const onScreenError = await this.getOnScreenErrorText();
+        if (onScreenError) return onScreenError;
+
+        const msg = (err && err.message ? err.message : '').toLowerCase();
+
+        if (msg.includes('captcha')) {
+            return 'Could not read the CAPTCHA - please retry.';
+        }
+        if (msg.includes('has been closed')) {
+            return 'The website closed the session unexpectedly - please retry.';
+        }
+        if (msg.includes('renew') && msg.includes('sidebar')) {
+            return 'Could not find the Renew section on the dashboard.';
+        }
+        if (msg.includes('stb serial')) {
+            return 'Could not find the STB search field - please check the STB number.';
+        }
+        if (msg.includes('checkbox')) {
+            return 'No renewable package found for this STB number.';
+        }
+        if (msg.includes('due date')) {
+            return 'Could not read the updated due date after renewal.';
+        }
+        if (msg.includes('timeout')) {
+            return 'The website took too long to respond - please retry.';
+        }
+
+        return 'Automation failed - please check the STB number and account details.';
+    }
+
     async close() {
         if (this.browser) {
             await this.browser.close();
@@ -1856,6 +2380,7 @@ class LoginAutomation {
                     stb: this.stbNumber,
                     status: renewalResult.status,
                     dueDate: renewalResult.dueDate,
+                    message: 'Successfully renewed the pack.',
                     finalUrl: this.page.url(),
                 };
             } catch (err) {
@@ -1865,8 +2390,11 @@ class LoginAutomation {
                 if (pageIsClosed) {
                     this.log('Browser/page closed unexpectedly - stopping retries for this run instead of continuing on a dead page.');
                     this.log('(This is often the site itself closing the session after several rapid login attempts. Consider spacing out retries or lowering concurrency if this happens often.)');
-                    return { success: false, attempts, error: err.message, username: this.username, password: this.password, stb: this.stbNumber };
+                    const message = 'The website closed the session unexpectedly - please retry.';
+                    return { success: false, attempts, error: err.message, message, username: this.username, password: this.password, stb: this.stbNumber };
                 }
+
+                const message = await this.buildFailureMessage(err).catch(() => 'Automation failed - please check the STB number and account details.');
 
                 if (loggedInThisAttempt) {
                     // We were already past login when this failed - almost
@@ -1876,17 +2404,24 @@ class LoginAutomation {
                     // closing the browser as an anti-automation measure. Fail
                     // fast with the debug info already logged above instead.
                     this.log('Failure happened after a successful login - not retrying with a fresh login. Check the debug screenshot/log above for the real cause.');
-                    return { success: false, attempts, error: err.message, failedAfterLogin: true, username: this.username, password: this.password, stb: this.stbNumber };
+                    return { success: false, attempts, error: err.message, message, failedAfterLogin: true, username: this.username, password: this.password, stb: this.stbNumber };
                 }
 
                 if (attempts >= maxRetries) {
-                    return { success: false, attempts, error: err.message, username: this.username, password: this.password, stb: this.stbNumber };
+                    return { success: false, attempts, error: err.message, message, username: this.username, password: this.password, stb: this.stbNumber };
                 }
                 await this.page.waitForTimeout(2000).catch(() => {});
             }
         }
 
-        return { success: false, attempts, username: this.username, password: this.password, stb: this.stbNumber };
+        return {
+            success: false,
+            attempts,
+            message: 'Login failed after multiple attempts - invalid credentials or CAPTCHA mismatch.',
+            username: this.username,
+            password: this.password,
+            stb: this.stbNumber,
+        };
     }
 }
 

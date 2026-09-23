@@ -52,7 +52,9 @@ class HybridCaptchaSolver {
         console.log('🐍 Using Python OCR bridge...');
         
         try {
-            const { stdout, stderr } = await execPromise(`python python_ocr_bridge.py "${imagePath}"`);
+            // const { stdout, stderr } = await execPromise(`python python_ocr_bridge.py "${imagePath}"`);
+            const pythonCmd = process.platform === 'win32' ? 'python' : path.join(__dirname, 'venv', 'bin', 'python3');
+            const { stdout, stderr } = await execPromise(`"${pythonCmd}" python_ocr_bridge.py "${imagePath}"`);
             
             if (stderr) console.log('Python stderr:', stderr);
             

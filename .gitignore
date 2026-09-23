@@ -1,0 +1,6 @@
+captcha.png
+captcha_*.png
+captcha_preprocessed.png
+session.json
+debug_packages_*.png
+node_modules/
