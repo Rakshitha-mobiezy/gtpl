@@ -2224,14 +2224,25 @@ class LoginAutomation {
         await renewBtn.click();
         this.log('Clicked the green "Renew" confirm button.');
         await this.page.waitForTimeout(3000);
+
+        // IMPORTANT: clicking "Renew" does NOT guarantee the pack was
+        // actually renewed. The site can reject it and show an error banner
+        // instead (e.g. "-1:Contracts can not be renewed or topup prior 7
+        // days to the contract end"). Check for that here and fail the run
+        // immediately if present, rather than continuing on and reporting a
+        // false success.
+        const renewError = await this.getOnScreenErrorText();
+        if (renewError) {
+            throw new Error(`Renewal rejected by the website: ${renewError}`);
+        }
     }
 
     /**
-     * After confirming renewal, the site lands back on the Renew search page
-     * (STB + account prefilled), sometimes showing a transient Oracle error
-     * banner ("ORA-01422: ...") which we ignore. We click Search once to
-     * pull fresh details and read whatever Due Date is showing right away -
-     * no waiting for Status to flip to ACTIVE.
+     * If renewal succeeded (no error banner was caught after clicking
+     * Renew), the site lands back on the Renew search page with STB +
+     * account prefilled. We click Search once to pull fresh details and
+     * read whatever Due Date is showing right away - no waiting for Status
+     * to flip to ACTIVE.
      */
     async confirmRenewalAndGetDueDate() {
         this.log('Fetching updated due date...');
@@ -2272,10 +2283,12 @@ class LoginAutomation {
             return await this.page.evaluate(() => {
                 const bodyText = document.body ? document.body.innerText : '';
 
-                // The Oracle-style error banner seen on this site, e.g.
-                // "-1422:ORA-01422: exact fetch returns more than requested number of rows"
-                const oraMatch = bodyText.match(/-?\d*:?ORA-\d+:[^\n]+/i);
-                if (oraMatch) return oraMatch[0].trim();
+                // This site shows errors in a "-<code>:<message>" convention,
+                // e.g. "-1422:ORA-01422: exact fetch returns more than
+                // requested number of rows" or "-1:Contracts can not be
+                // renewed or topup prior 7 days to the contract end".
+                const errorCodeMatch = bodyText.match(/-\d+:[^\n]+/);
+                if (errorCodeMatch) return errorCodeMatch[0].trim();
 
                 // Generic fallback: a short, visible element styled as an
                 // error/danger/alert near the top of the page.
