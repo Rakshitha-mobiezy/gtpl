@@ -2315,7 +2315,10 @@ class LoginAutomation {
         try {
             return await this.page.evaluate(() => {
                 const bodyText = document.body ? document.body.innerText : '';
-                const errorCodeMatch = bodyText.match(/-\d+:[^\n]+/);
+                // const errorCodeMatch = bodyText.match(/-\d+:[^\n]+/);
+                const errorCodeMatch = bodyText.match(
+                    /(?:-\d+\s*:[^\n]+|\d{3,}\s*=\s*[^\n]+)/
+                );
                 return errorCodeMatch ? errorCodeMatch[0].trim() : null;
             });
         } catch (_) {
