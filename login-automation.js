@@ -2311,20 +2311,20 @@ class LoginAutomation {
      * that it will not match a plain status badge like "EXPIRED" or
      * "INACTIVE".
      */
-    async getOnScreenErrorText() {
-        try {
-            return await this.page.evaluate(() => {
-                const bodyText = document.body ? document.body.innerText : '';
-                // const errorCodeMatch = bodyText.match(/-\d+:[^\n]+/);
-                const errorCodeMatch = bodyText.match(
-                    /(?:-\d+\s*:[^\n]+|\d{3,}\s*=\s*[^\n]+)/
-                );
-                return errorCodeMatch ? errorCodeMatch[0].trim() : null;
-            });
-        } catch (_) {
-            return null;
-        }
-    }
+    // async getOnScreenErrorText() {
+    //     try {
+    //         return await this.page.evaluate(() => {
+    //             const bodyText = document.body ? document.body.innerText : '';
+    //             // const errorCodeMatch = bodyText.match(/-\d+:[^\n]+/);
+    //             const errorCodeMatch = bodyText.match(
+    //                 /(?:-\d+\s*:[^\n]+|\d{3,}\s*=\s*[^\n]+)/
+    //             );
+    //             return errorCodeMatch ? errorCodeMatch[0].trim() : null;
+    //         });
+    //     } catch (_) {
+    //         return null;
+    //     }
+    // }
 
     /**
      * Turns a caught error (plus whatever the website itself is showing on
@@ -2332,6 +2332,76 @@ class LoginAutomation {
      * reporting back through the API. Deliberately avoids selector/button-
      * level detail (e.g. never says "could not click element X").
      */
+
+    async getOnScreenErrorText() {
+        try {
+            return await this.page.evaluate(() => {
+                const bodyText = document.body ? document.body.innerText : '';
+
+                // Strategy 1: match any error-code style line, whatever separator
+                // the site uses between code and message. Covers all of these:
+                //   -1422:ORA-01422: exact fetch returns more than requested number of rows
+                //   -1:Contracts can not be renewed or topup prior 7 days to the contract end
+                //   80741=Renewal is not allowed for disconnected contracts before expiry
+                //   -1234 - some other message
+                // Requires at least 3 digits in the code so it never false-matches
+                // normal badges like "EXPIRED" or "INACTIVE".
+                const codeStyleMatch = bodyText.match(
+                    /-?\d{3,}\s*[:=\-]\s*[^\n]+/
+                );
+                if (codeStyleMatch) {
+                    return codeStyleMatch[0].trim();
+                }
+
+                // Strategy 2 (fallback): the site always renders its real errors
+                // as red text next to a warning triangle at the top of the content
+                // area. If the code-style regex above missed a new format the site
+                // introduces later, walk the DOM looking for that banner. We
+                // deliberately exclude anything that is just a status word like
+                // EXPIRED / INACTIVE / ACTIVE.
+                const walker = document.createTreeWalker(
+                    document.body,
+                    NodeFilter.SHOW_ELEMENT,
+                    null
+                );
+
+                const IGNORE_EXACT = new Set([
+                    'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
+                ]);
+
+                let el;
+                while ((el = walker.nextNode())) {
+                    const style = window.getComputedStyle(el);
+                    const color = style.color || '';
+                    const isRed =
+                        /rgb\(\s*2[0-5][0-9]\s*,\s*(0|[1-9]?\d|1[0-9]?\d)\s*,\s*(0|[1-9]?\d|1[0-9]?\d)\s*\)/.test(color) ||
+                        /rgb\(\s*255\s*,\s*0\s*,\s*0\s*\)/.test(color);
+
+                    if (!isRed) continue;
+
+                    // Only consider leaf-ish elements so we don't grab a big
+                    // container that also happens to be styled red.
+                    if (el.children.length > 0) continue;
+
+                    const text = (el.innerText || el.textContent || '').trim();
+                    if (!text) continue;
+                    if (text.length < 5) continue;
+                    if (IGNORE_EXACT.has(text.toUpperCase())) continue;
+
+                    // Must contain a digit somewhere - real error banners always
+                    // include an error code. This is the key guard that prevents
+                    // false-positives on decorative red text.
+                    if (!/\d/.test(text)) continue;
+
+                    return text;
+                }
+
+                return null;
+            });
+        } catch (_) {
+            return null;
+        }
+    }
     async buildFailureMessage(err) {
         const onScreenError = await this.getOnScreenErrorText();
         if (onScreenError) return onScreenError;
