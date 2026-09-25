@@ -2,6 +2,7 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const fs = require('fs');
+const path = require('path');
 
 class HybridCaptchaSolver {
     // async solveCaptchaPython(imagePath) {

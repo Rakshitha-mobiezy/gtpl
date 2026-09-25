@@ -2010,21 +2010,20 @@ class LoginAutomation {
     }
 
     /**
-     * Screenshot 1: "Your password is expiring soon" popup with
-     * "I'll do it later" / "Change password" buttons.
-     * This popup is NOT guaranteed to show up every login, so we just
-     * check for it briefly and click through it if present, otherwise move on.
+     * "Your password is expiring soon" popup with "I'll do it later" /
+     * "Change password" buttons. Not guaranteed to show up every login, so
+     * we just check briefly and click through it if present, otherwise move on.
      */
     async handlePasswordExpiryPopup(timeout = 8000) {
         this.log('Checking for password-expiry popup...');
 
-        // IMPORTANT: isVisible() does NOT wait/poll — it checks once, instantly.
+        // IMPORTANT: isVisible() does NOT wait/poll - it checks once, instantly.
         // waitFor({ state: 'visible' }) actually polls until the timeout, which is
         // what we need since the popup can take a moment to render after login.
         //
         // Matching by regex (not an exact string with a straight apostrophe) also
         // protects against sites that render the button text with a curly
-        // apostrophe (’) via &rsquo; — a hardcoded "I'll do it later" would silently
+        // apostrophe (’) via &rsquo; - a hardcoded "I'll do it later" would silently
         // never match that.
         const laterBtn = this.page.getByText(/do it later/i).first();
 
@@ -2039,13 +2038,12 @@ class LoginAutomation {
     }
 
     /**
-     * Screenshot 2 (blank "auto redirect in 5 seconds" screen) is transient and
+     * The blank "auto redirect in 5 seconds" screen is transient and
      * disappears on its own within ~5-10s, after which the real dashboard
-     * (screenshot 3, with "Wallet Balance") appears. We just wait for that
-     * dashboard marker to show up rather than trying to detect/click anything
-     * on the redirect screen itself.
+     * (with "GTPL SAATHI" logo / sidebar) appears. We race the URL changing
+     * against the logo becoming visible, whichever comes first.
      */
-    async waitForDashboard(timeout = 20000) {
+    async waitForDashboard(timeout = 40000) {
         this.log('Waiting for dashboard to finish loading...');
         try {
             // NOTE: "text=Wallet Balance" used to match 2 elements on this site -
@@ -2070,16 +2068,33 @@ class LoginAutomation {
     }
 
     /**
-     * Screenshot 4: sidebar item "Renew". We click the text label itself,
-     * not the dropdown caret next to it, and we scroll it into view first
-     * since it's further down the sidebar.
+     * Sidebar item "Renew". We click the text label itself, not the dropdown
+     * caret next to it, and scroll it into view first since it's further
+     * down the sidebar.
      */
     async clickRenew() {
         this.log('Looking for the "Renew" sidebar item...');
         const renewItems = this.page.locator('a:text-is("Renew"), li:text-is("Renew"), span:text-is("Renew")');
 
-        const countBefore = await renewItems.count();
+        // Poll for the sidebar item to actually exist first, with visible
+        // progress logging. If the dashboard is slow to render (e.g. slower
+        // network on a server run), this waits patiently instead of jumping
+        // straight into scrollIntoViewIfNeeded's own long actionability wait.
+        let countBefore = await renewItems.count();
+        const deadline = Date.now() + 30000;
+        while (countBefore === 0 && Date.now() < deadline) {
+            this.log('"Renew" not in the sidebar yet - still waiting for dashboard to render...');
+            await this.page.waitForTimeout(2000);
+            countBefore = await renewItems.count();
+        }
+
         this.log(`Found ${countBefore} element(s) matching "Renew" before click.`);
+        if (countBefore === 0) {
+            const debugPath = path.join(__dirname, `debug_no_renew_${this.label}_${Date.now()}.png`);
+            await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
+            this.log(`Debug screenshot: ${debugPath}`);
+            throw new Error('The "Renew" sidebar item never appeared - dashboard may not have loaded.');
+        }
 
         const first = renewItems.first();
         await first.scrollIntoViewIfNeeded();
@@ -2114,7 +2129,7 @@ class LoginAutomation {
     }
 
     /**
-     * Screenshot 5: Renew page with "STB SERIAL #" input and "Search" button.
+     * Renew page with "STB SERIAL #" input and "Search" button.
      */
     async searchStb() {
         this.log(`Entering STB serial number: ${this.stbNumber}`);
@@ -2156,11 +2171,17 @@ class LoginAutomation {
     }
 
     /**
-     * Screenshot 6 (search results): a "PACKAGE DETAILS" section lists the
-     * customer's package(s), each with a checkbox in front of the name, and a
-     * green "Renew" button below to confirm. This "Renew" is a distinct
-     * <button> element from the sidebar "Renew" link clicked earlier -
-     * scoping to role "button" with an exact name keeps the two from colliding.
+     * Search results page: a "PACKAGE DETAILS" section lists the customer's
+     * package(s), each with a checkbox in front of the name, and a green
+     * "Renew" button below to confirm. This "Renew" is a distinct <button>
+     * element from the sidebar "Renew" link clicked earlier - scoping to
+     * role "button" with an exact name keeps the two from colliding.
+     *
+     * Per requirement: we do NOT check for any error before clicking this
+     * green Renew button (e.g. the "EXPIRED" badge on the package row is
+     * normal/expected here - that's the whole reason it's being renewed).
+     * The only error check happens AFTER the click, on the resulting page -
+     * see the block right after renewBtn.click() below.
      */
     async selectPackagesAndRenew() {
         this.log('Waiting for package details to load...');
@@ -2219,6 +2240,9 @@ class LoginAutomation {
             }
         }
 
+        // ---- No error-checking above this line. Click the green Renew ----
+        // ---- confirm button, THEN check the resulting page for a real ----
+        // ---- error banner.                                            ----
         const renewBtn = this.page.getByRole('button', { name: 'Renew', exact: true });
         await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
         await renewBtn.click();
@@ -2226,21 +2250,23 @@ class LoginAutomation {
         await this.page.waitForTimeout(3000);
 
         // IMPORTANT: clicking "Renew" does NOT guarantee the pack was
-        // actually renewed. The site can reject it and show an error banner
-        // instead (e.g. "-1:Contracts can not be renewed or topup prior 7
-        // days to the contract end"). Check for that here and fail the run
-        // immediately if present, rather than continuing on and reporting a
-        // false success.
+        // actually renewed. The site can reject it and show a red error
+        // banner at the top instead (e.g. "-1:Contracts can not be renewed
+        // or topup prior 7 days to the contract end", or
+        // "-1422:ORA-01422: ..."). If that banner is present, fail the run
+        // right here with that exact message instead of continuing on to
+        // fetch a stale due date.
         const renewError = await this.getOnScreenErrorText();
         if (renewError) {
             throw new Error(`Renewal rejected by the website: ${renewError}`);
         }
+        this.log('No error banner found after Renew - proceeding to fetch the updated due date.');
     }
 
     /**
-     * If renewal succeeded (no error banner was caught after clicking
-     * Renew), the site lands back on the Renew search page with STB +
-     * account prefilled. We click Search once to pull fresh details and
+     * Only reached if selectPackagesAndRenew() found NO error banner after
+     * clicking Renew. The site lands back on the Renew search page with STB
+     * + account prefilled. We click Search once to pull fresh details and
      * read whatever Due Date is showing right away - no waiting for Status
      * to flip to ACTIVE.
      */
@@ -2255,13 +2281,10 @@ class LoginAutomation {
 
         const pageText = await this.page.evaluate(() => document.body.innerText).catch(() => '');
 
-        const statusMatch = pageText.match(/Status\s*:\s*([A-Za-z]+)/i);
-        const status = statusMatch ? statusMatch[1].toUpperCase() : null;
-
         const dueDateMatch = pageText.match(/Due Date\s*:\s*([\d/.\-]+)/i);
         const dueDate = dueDateMatch ? dueDateMatch[1].trim() : null;
 
-        this.log(`Status: ${status}, Due date: ${dueDate}`);
+        this.log(`Due date: ${dueDate}`);
 
         if (!dueDate) {
             const debugPath = path.join(__dirname, `debug_duedate_${this.label}_${Date.now()}.png`);
@@ -2269,37 +2292,31 @@ class LoginAutomation {
             this.log(`Could not find a Due Date on the page. Debug screenshot saved: ${debugPath}`);
         }
 
-        return { status, dueDate };
+        return { dueDate };
     }
 
     /**
-     * Tries to read any error banner the WEBSITE ITSELF is showing (e.g. the
-     * "-1422:ORA-01422: ..." banner from a backend/database error) so the
-     * final result can surface the real reason instead of an internal or
-     * technical one.
+     * Reads any REAL error banner the website itself is showing, e.g.
+     * "-1422:ORA-01422: exact fetch returns more than requested number of
+     * rows" or "-1:Contracts can not be renewed or topup prior 7 days to
+     * the contract end". Matches only this site's specific
+     * "-<code>:<message>" error convention.
+     *
+     * IMPORTANT: there is deliberately NO generic "any element styled as
+     * danger/error/alert" fallback here anymore. That used to false-positive
+     * on the normal "EXPIRED" status badge shown on the package row (which
+     * is expected/normal - it's the whole reason the pack is being renewed
+     * in the first place) and wrongly reported it as a site rejection. The
+     * numeric error-code pattern is specific enough to real error banners
+     * that it will not match a plain status badge like "EXPIRED" or
+     * "INACTIVE".
      */
     async getOnScreenErrorText() {
         try {
             return await this.page.evaluate(() => {
                 const bodyText = document.body ? document.body.innerText : '';
-
-                // This site shows errors in a "-<code>:<message>" convention,
-                // e.g. "-1422:ORA-01422: exact fetch returns more than
-                // requested number of rows" or "-1:Contracts can not be
-                // renewed or topup prior 7 days to the contract end".
                 const errorCodeMatch = bodyText.match(/-\d+:[^\n]+/);
-                if (errorCodeMatch) return errorCodeMatch[0].trim();
-
-                // Generic fallback: a short, visible element styled as an
-                // error/danger/alert near the top of the page.
-                const els = Array.from(document.querySelectorAll('[class*="error" i], [class*="danger" i], [class*="alert" i]'));
-                for (const el of els) {
-                    const text = (el.innerText || '').trim();
-                    if (text && text.length > 3 && text.length < 200 && el.offsetParent !== null) {
-                        return text;
-                    }
-                }
-                return null;
+                return errorCodeMatch ? errorCodeMatch[0].trim() : null;
             });
         } catch (_) {
             return null;
@@ -2352,8 +2369,9 @@ class LoginAutomation {
 
     /**
      * Full end-to-end flow for ONE account: login -> popup -> dashboard ->
-     * Renew -> search STB. Retries the whole login on failure (fresh captcha
-     * each time) up to maxRetries.
+     * Renew -> search STB -> select package -> click Renew -> check for
+     * error -> fetch due date. Retries the whole login on failure (fresh
+     * captcha each time) up to maxRetries.
      */
     async run(maxRetries = 3) {
         let attempts = 0;
@@ -2391,7 +2409,6 @@ class LoginAutomation {
                     username: this.username,
                     password: this.password,
                     stb: this.stbNumber,
-                    status: renewalResult.status,
                     dueDate: renewalResult.dueDate,
                     message: 'Successfully renewed the pack.',
                     finalUrl: this.page.url(),
@@ -2412,10 +2429,11 @@ class LoginAutomation {
                 if (loggedInThisAttempt) {
                     // We were already past login when this failed - almost
                     // certainly a selector/timing issue on a post-login page,
-                    // not a bad CAPTCHA. Re-attempting a full fresh login
-                    // won't fix that, and repeated rapid logins risk the site
-                    // closing the browser as an anti-automation measure. Fail
-                    // fast with the debug info already logged above instead.
+                    // or a real site rejection (e.g. renewal too close to
+                    // contract end) - not a bad CAPTCHA. Re-attempting a
+                    // full fresh login won't fix that, and repeated rapid
+                    // logins risk the site closing the browser as an
+                    // anti-automation measure. Fail fast instead.
                     this.log('Failure happened after a successful login - not retrying with a fresh login. Check the debug screenshot/log above for the real cause.');
                     return { success: false, attempts, error: err.message, message, failedAfterLogin: true, username: this.username, password: this.password, stb: this.stbNumber };
                 }
