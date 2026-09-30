@@ -2191,7 +2191,14 @@ class LoginAutomation {
             const debugPath = path.join(__dirname, `debug_packages_${this.label}_${Date.now()}.png`);
             await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
             this.log(`PACKAGE DETAILS section not found. Debug screenshot saved: ${debugPath}`);
-            throw err;
+            const onScreenError = await this.getOnScreenErrorText();
+            if (onScreenError) {
+                this.log(`Site is showing an error banner: "${onScreenError}"`);
+                throw new Error(`Website rejected the request: ${onScreenError}`);
+            }
+
+            // No banner either — this is a genuine timing/DOM issue.
+            throw new Error('PACKAGE DETAILS section did not appear - please retry.');
         }
 
         // Confirmed from a live debug dump: the package checkbox is a real
