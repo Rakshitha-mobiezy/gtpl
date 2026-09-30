@@ -2357,81 +2357,179 @@ class LoginAutomation {
      * reporting back through the API. Deliberately avoids selector/button-
      * level detail (e.g. never says "could not click element X").
      */
-
     async getOnScreenErrorText() {
-        try {
-            return await this.page.evaluate(() => {
-                const bodyText = document.body ? document.body.innerText : '';
+    try {
+        return await this.page.evaluate(() => {
+            // The site renders its real errors as:
+            //   <span/icon class="...fa-warning...">⚠</span> Some error text
+            //   (or a <i>/<span> containing U+26A0 / a triangle glyph)
+            // …sitting at the top of the content area, ABOVE the orange
+            // "Renew" header bar. The two defining traits are:
+            //   (1) the message element is a SIBLING that comes AFTER a
+            //       warning-icon element, and
+            //   (2) its computed colour is red.
+            //
+            // We deliberately do NOT just walk the DOM for "any red leaf
+            // node with a digit" — that was matching the brand-coloured
+            // labels like "STB Type : NAGRA-CH02X001-HD" (returning
+            // "001-HD") and "Renewal Amount :" further down the page.
+            //
+            // Real errors also are never bare status words like
+            // EXPIRED / INACTIVE / ACTIVE.
 
-                // Strategy 1: match any error-code style line, whatever separator
-                // the site uses between code and message. Covers all of these:
-                //   -1422:ORA-01422: exact fetch returns more than requested number of rows
-                //   -1:Contracts can not be renewed or topup prior 7 days to the contract end
-                //   80741=Renewal is not allowed for disconnected contracts before expiry
-                //   -1234 - some other message
-                // Requires at least 3 digits in the code so it never false-matches
-                // normal badges like "EXPIRED" or "INACTIVE".
-                const codeStyleMatch = bodyText.match(
-                    /-?\d{3,}\s*[:=\-]\s*[^\n]+/
-                );
-                if (codeStyleMatch) {
-                    return codeStyleMatch[0].trim();
+            const IGNORE_EXACT = new Set([
+                'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
+            ]);
+
+            const isRed = (color) => {
+                if (!color) return false;
+                const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+                if (!m) return false;
+                const [r, g, b] = [ +m[1], +m[2], +m[3] ];
+                // red-ish: strong red channel, weak green AND blue
+                return r >= 150 && g <= 90 && b <= 90;
+            };
+
+            const isWarnIcon = (el) => {
+                if (!el) return false;
+                // Icon may be a font-awesome <i>, a <span>, or an <img>.
+                // Font-awesome warning uses class names like
+                // "fa-warning", "fa-exclamation-triangle", "fa-triangle-
+                // exclamation". Also accept a literal glyph in text.
+                const cls = (el.className || '') + ' ' +
+                            (el.getAttribute && el.getAttribute('class') || '');
+                if (/\b(fa-warning|fa-exclamation-triangle|fa-triangle-exclamation|glyphicon-warning-sign|icon-warning|alert-warning)\b/i.test(cls)) {
+                    return true;
+                }
+                const txt = (el.textContent || '').trim();
+                if (/^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C]$/.test(txt)) return true;
+                return false;
+            };
+
+            // Walk every candidate message element. For each one that is
+            // red and non-trivial, look BACKWARDS among its siblings for a
+            // warning icon. If found, that's a real error banner.
+            const allEls = document.querySelectorAll('body *');
+            for (const el of allEls) {
+                if (el.children.length > 0) continue; // leaf nodes only
+
+                const text = (el.innerText || el.textContent || '').trim();
+                if (!text) continue;
+                if (text.length < 3) continue;
+                if (IGNORE_EXACT.has(text.toUpperCase())) continue;
+
+                const style = window.getComputedStyle(el);
+                if (!isRed(style.color)) continue;
+
+                // Look at previous siblings for a warning icon.
+                let prev = el.previousElementSibling;
+                let foundIcon = false;
+                // allow a couple of hops in case there's a whitespace <br>
+                for (let hops = 0; prev && hops < 3; hops++) {
+                    if (isWarnIcon(prev)) { foundIcon = true; break; }
+                    // Also accept an icon nested inside the previous sibling
+                    const nested = prev.querySelector && prev.querySelector(
+                        '[class*="warning" i],[class*="fa-warning" i],[class*="exclamation" i]'
+                    );
+                    if (nested) { foundIcon = true; break; }
+                    prev = prev.previousElementSibling;
                 }
 
-                // Strategy 2 (fallback): the site always renders its real errors
-                // as red text next to a warning triangle at the top of the content
-                // area. If the code-style regex above missed a new format the site
-                // introduces later, walk the DOM looking for that banner. We
-                // deliberately exclude anything that is just a status word like
-                // EXPIRED / INACTIVE / ACTIVE.
-                const walker = document.createTreeWalker(
-                    document.body,
-                    NodeFilter.SHOW_ELEMENT,
-                    null
-                );
-
-                const IGNORE_EXACT = new Set([
-                    'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
-                ]);
-
-                let el;
-                while ((el = walker.nextNode())) {
-                    const style = window.getComputedStyle(el);
-                    const color = style.color || '';
-                    const isRed =
-                        /rgb\(\s*2[0-5][0-9]\s*,\s*(0|[1-9]?\d|1[0-9]?\d)\s*,\s*(0|[1-9]?\d|1[0-9]?\d)\s*\)/.test(color) ||
-                        /rgb\(\s*255\s*,\s*0\s*,\s*0\s*\)/.test(color);
-
-                    if (!isRed) continue;
-
-                    // Only consider leaf-ish elements so we don't grab a big
-                    // container that also happens to be styled red.
-                    if (el.children.length > 0) continue;
-
-                    const text = (el.innerText || el.textContent || '').trim();
-                    if (!text) continue;
-                    if (text.length < 5) continue;
-                    if (IGNORE_EXACT.has(text.toUpperCase())) continue;
-
-                    // Must contain a digit somewhere - real error banners always
-                    // include an error code. This is the key guard that prevents
-                    // false-positives on decorative red text.
-                    // if (!/\d/.test(text)) continue;
-                    const hasWarnGlyph = /[\u26A0\u26A0\uFE0F\u25B2\u25B3]/.test(text);
-
-                    if (!/\d/.test(text) && !hasWarnGlyph) continue;
-
-                    return text;
-
-                    return text;
+                // Fallback: the warning icon may be a parent's *first*
+                // child while our red text is a later child of the same
+                // parent (common with <div><span>⚠</span> text</div>).
+                if (!foundIcon && el.parentElement) {
+                    const first = el.parentElement.firstElementChild;
+                    if (first && first !== el && isWarnIcon(first)) {
+                        foundIcon = true;
+                    }
                 }
 
-                return null;
-            });
-        } catch (_) {
+                if (foundIcon) {
+                    return text;
+                }
+            }
+
             return null;
-        }
+        });
+    } catch (_) {
+        return null;
     }
+}
+    // async getOnScreenErrorText() {
+    //     try {
+    //         return await this.page.evaluate(() => {
+    //             const bodyText = document.body ? document.body.innerText : '';
+
+    //             // Strategy 1: match any error-code style line, whatever separator
+    //             // the site uses between code and message. Covers all of these:
+    //             //   -1422:ORA-01422: exact fetch returns more than requested number of rows
+    //             //   -1:Contracts can not be renewed or topup prior 7 days to the contract end
+    //             //   80741=Renewal is not allowed for disconnected contracts before expiry
+    //             //   -1234 - some other message
+    //             // Requires at least 3 digits in the code so it never false-matches
+    //             // normal badges like "EXPIRED" or "INACTIVE".
+    //             const codeStyleMatch = bodyText.match(
+    //                 /-?\d{3,}\s*[:=\-]\s*[^\n]+/
+    //             );
+    //             if (codeStyleMatch) {
+    //                 return codeStyleMatch[0].trim();
+    //             }
+
+    //             // Strategy 2 (fallback): the site always renders its real errors
+    //             // as red text next to a warning triangle at the top of the content
+    //             // area. If the code-style regex above missed a new format the site
+    //             // introduces later, walk the DOM looking for that banner. We
+    //             // deliberately exclude anything that is just a status word like
+    //             // EXPIRED / INACTIVE / ACTIVE.
+    //             const walker = document.createTreeWalker(
+    //                 document.body,
+    //                 NodeFilter.SHOW_ELEMENT,
+    //                 null
+    //             );
+
+    //             const IGNORE_EXACT = new Set([
+    //                 'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
+    //             ]);
+
+    //             let el;
+    //             while ((el = walker.nextNode())) {
+    //                 const style = window.getComputedStyle(el);
+    //                 const color = style.color || '';
+    //                 const isRed =
+    //                     /rgb\(\s*2[0-5][0-9]\s*,\s*(0|[1-9]?\d|1[0-9]?\d)\s*,\s*(0|[1-9]?\d|1[0-9]?\d)\s*\)/.test(color) ||
+    //                     /rgb\(\s*255\s*,\s*0\s*,\s*0\s*\)/.test(color);
+
+    //                 if (!isRed) continue;
+
+    //                 // Only consider leaf-ish elements so we don't grab a big
+    //                 // container that also happens to be styled red.
+    //                 if (el.children.length > 0) continue;
+
+    //                 const text = (el.innerText || el.textContent || '').trim();
+    //                 if (!text) continue;
+    //                 if (text.length < 5) continue;
+    //                 if (IGNORE_EXACT.has(text.toUpperCase())) continue;
+
+    //                 // Must contain a digit somewhere - real error banners always
+    //                 // include an error code. This is the key guard that prevents
+    //                 // false-positives on decorative red text.
+    //                 // if (!/\d/.test(text)) continue;
+    //                 const hasWarnGlyph = /[\u26A0\u26A0\uFE0F\u25B2\u25B3]/.test(text);
+
+    //                 if (!/\d/.test(text) && !hasWarnGlyph) continue;
+
+    //                 return text;
+
+    //                 return text;
+    //             }
+
+    //             return null;
+    //         });
+    //     } catch (_) {
+    //         return null;
+    //     }
+    // }
     async buildFailureMessage(err) {
         const onScreenError = await this.getOnScreenErrorText();
         if (onScreenError) return onScreenError;
