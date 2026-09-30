@@ -2224,10 +2224,28 @@ class LoginAutomation {
             this.log(`Found ${count} checkbox(es) via page-wide fallback.`);
         }
 
+        // if (count === 0) {
+        //     const debugPath = path.join(__dirname, `debug_packages_${this.label}_${Date.now()}.png`);
+        //     await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
+        //     this.log(`Debug screenshot: ${debugPath}`);
+        //     throw new Error('No package checkbox found on the page. See debug screenshot above.');
+        // }
         if (count === 0) {
+            // No checkbox means either:
+            //   (a) the site showed a real error banner (e.g. "No Package for
+            //       this Customer..."), in which case we should surface that
+            //       exact wording, OR
+            //   (b) something else went wrong (slow render, DOM change).
+            // Try to read the banner before giving up.
+            const onScreenError = await this.getOnScreenErrorText();
+            if (onScreenError) {
+                this.log(`No checkbox appeared, and the site is showing an error: "${onScreenError}"`);
+                throw new Error(`Website rejected the request: ${onScreenError}`);
+            }
+
             const debugPath = path.join(__dirname, `debug_packages_${this.label}_${Date.now()}.png`);
             await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
-            this.log(`Debug screenshot: ${debugPath}`);
+            this.log(`No checkbox and no error banner found. Debug screenshot: ${debugPath}`);
             throw new Error('No package checkbox found on the page. See debug screenshot above.');
         }
 
@@ -2391,7 +2409,12 @@ class LoginAutomation {
                     // Must contain a digit somewhere - real error banners always
                     // include an error code. This is the key guard that prevents
                     // false-positives on decorative red text.
-                    if (!/\d/.test(text)) continue;
+                    // if (!/\d/.test(text)) continue;
+                    const hasWarnGlyph = /[\u26A0\u26A0\uFE0F\u25B2\u25B3]/.test(text);
+
+                    if (!/\d/.test(text) && !hasWarnGlyph) continue;
+
+                    return text;
 
                     return text;
                 }
