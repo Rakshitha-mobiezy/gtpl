@@ -2264,189 +2264,317 @@ class LoginAutomation {
                 this.log(`Checked package checkbox #${i + 1}.`);
             }
         }
+                                           
+        // const renewBtn = this.page.getByRole('button', { name: 'Renew', exact: true });
+        // await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
+        // await renewBtn.click();
+        // this.log('Clicked the green "Renew" confirm button.');
 
-        // ---- No error-checking above this line. Click the green Renew ----
-        // ---- confirm button, THEN check the resulting page for a real ----
-        // ---- error banner.                                            ----
+        // const renewError = await this.getOnScreenErrorText();
+        // if (renewError) {
+        //     throw new Error(`Renewal rejected by the website: ${renewError}`);
+        // }
+        // this.log('No error banner found after Renew - proceeding to fetch the updated due date.');
+                // ---- Capture the due date BEFORE clicking green Renew. ----
+        // The Renew search results page always shows a Due Date for this
+        // STB — that's the CURRENT (pre-renewal) due date. We keep it so
+        // that after the click we can tell whether the site actually
+        // updated it or just silently did nothing.
+        const preRenewDueDate = await this.readDueDate();
+        this.log(`Due date before renewal: ${preRenewDueDate || '(not found)'}`);
+
+        // ---- Click the green Renew confirm button ----
         const renewBtn = this.page.getByRole('button', { name: 'Renew', exact: true });
         await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
         await renewBtn.click();
         this.log('Clicked the green "Renew" confirm button.');
-        // await this.page.waitForTimeout(3000);
 
-        // IMPORTANT: clicking "Renew" does NOT guarantee the pack was
-        // actually renewed. The site can reject it and show a red error
-        // banner at the top instead (e.g. "-1:Contracts can not be renewed
-        // or topup prior 7 days to the contract end", or
-        // "-1422:ORA-01422: ..."). If that banner is present, fail the run
-        // right here with that exact message instead of continuing on to
-        // fetch a stale due date.
+        // Wait for either the error banner to appear OR the search form
+        // to come back (success path), whichever happens first.
+        await Promise.race([
+            this.page.waitForFunction(() => {
+                const t = document.body ? document.body.innerText : '';
+                return /-?\d{3,}\s*[:：=＝\-]\s*\S/.test(t);
+            }, { timeout: 15000 }).catch(() => {}),
+            this.page.waitForSelector(
+                'input[placeholder*="STB SERIAL" i], input[placeholder*="STB Serial" i]',
+                { timeout: 15000 }
+            ).catch(() => {}),
+        ]);
+        // let the banner's fade-in complete before reading innerText
+        await this.page.waitForTimeout(1500);
+
         const renewError = await this.getOnScreenErrorText();
         if (renewError) {
             throw new Error(`Renewal rejected by the website: ${renewError}`);
         }
-        this.log('No error banner found after Renew - proceeding to fetch the updated due date.');
-    }
+        this.log('No error banner found after Renew - will now verify the due date changed.');
 
-    /**
-     * Only reached if selectPackagesAndRenew() found NO error banner after
-     * clicking Renew. The site lands back on the Renew search page with STB
-     * + account prefilled. We click Search once to pull fresh details and
-     * read whatever Due Date is showing right away - no waiting for Status
-     * to flip to ACTIVE.
-     */
-    async confirmRenewalAndGetDueDate() {
-        this.log('Fetching updated due date...');
-
+        // ---- Click Search again to pull fresh details ----
         const searchBtn = this.page.getByRole('button', { name: 'Search', exact: true });
         await searchBtn.waitFor({ state: 'visible', timeout: 15000 });
         await searchBtn.click();
         this.log('Clicked "Search" to pull the updated details.');
         await this.page.waitForTimeout(3000);
 
-        const pageText = await this.page.evaluate(() => document.body.innerText).catch(() => '');
+        const postRenewDueDate = await this.readDueDate();
+        this.log(`Due date after renewal: ${postRenewDueDate || '(not found)'}`);
 
-        const dueDateMatch = pageText.match(/Due Date\s*:\s*([\d/.\-]+)/i);
-        const dueDate = dueDateMatch ? dueDateMatch[1].trim() : null;
-
-        this.log(`Due date: ${dueDate}`);
-
-        if (!dueDate) {
-            const debugPath = path.join(__dirname, `debug_duedate_${this.label}_${Date.now()}.png`);
-            await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
-            this.log(`Could not find a Due Date on the page. Debug screenshot saved: ${debugPath}`);
+        // ---- Decide success based on whether the due date actually moved. ----
+        // The due date is visible on the page even when the renewal was
+        // rejected, so "we see a due date" alone is NOT proof of success.
+        // The only reliable signals are:
+        //   (a) a red error banner appeared → already handled above, or
+        //   (b) the due date changed from the pre-renewal value.
+        if (!preRenewDueDate) {
+            this.log('Could not read the pre-renewal due date - falling back to banner-only check.');
+            // Can't compare; trust the absence of a banner.
+        } else if (!postRenewDueDate) {
+            throw new Error('Could not read the updated due date after renewal.');
+        } else if (postRenewDueDate === preRenewDueDate) {
+            // No banner, but the due date didn't move. On this site that
+            // means the renewal silently didn't go through.
+            throw new Error(
+                `Renewal did not go through - due date is still ${postRenewDueDate}. ` +
+                `Please check the account status and try again.`
+            );
+        } else {
+            this.log(`Due date moved from ${preRenewDueDate} to ${postRenewDueDate} - renewal confirmed.`);
         }
 
-        return { dueDate };
+        // Stash for confirmRenewalAndGetDueDate() to pick up.
+        this._postRenewDueDate = postRenewDueDate;
     }
 
-    /**
-     * Reads any REAL error banner the website itself is showing, e.g.
-     * "-1422:ORA-01422: exact fetch returns more than requested number of
-     * rows" or "-1:Contracts can not be renewed or topup prior 7 days to
-     * the contract end". Matches only this site's specific
-     * "-<code>:<message>" error convention.
-     *
-     * IMPORTANT: there is deliberately NO generic "any element styled as
-     * danger/error/alert" fallback here anymore. That used to false-positive
-     * on the normal "EXPIRED" status badge shown on the package row (which
-     * is expected/normal - it's the whole reason the pack is being renewed
-     * in the first place) and wrongly reported it as a site rejection. The
-     * numeric error-code pattern is specific enough to real error banners
-     * that it will not match a plain status badge like "EXPIRED" or
-     * "INACTIVE".
-     */
-    // async getOnScreenErrorText() {
-    //     try {
-    //         return await this.page.evaluate(() => {
-    //             const bodyText = document.body ? document.body.innerText : '';
-    //             // const errorCodeMatch = bodyText.match(/-\d+:[^\n]+/);
-    //             const errorCodeMatch = bodyText.match(
-    //                 /(?:-\d+\s*:[^\n]+|\d{3,}\s*=\s*[^\n]+)/
-    //             );
-    //             return errorCodeMatch ? errorCodeMatch[0].trim() : null;
-    //         });
-    //     } catch (_) {
-    //         return null;
+    async readDueDate() {
+        try {
+            return await this.page.evaluate(() => {
+                const t = document.body ? document.body.innerText : '';
+                const m = t.match(/Due Date\s*[:\-]?\s*([\d/.\-]+)/i);
+                return m ? m[1].trim() : null;
+            });
+        } catch (_) {
+            return null;
+        }
+    }
+
+    // async confirmRenewalAndGetDueDate() {
+    //     this.log('Fetching updated due date...');
+
+    //     const searchBtn = this.page.getByRole('button', { name: 'Search', exact: true });
+    //     await searchBtn.waitFor({ state: 'visible', timeout: 15000 });
+    //     await searchBtn.click();
+    //     this.log('Clicked "Search" to pull the updated details.');
+    //     await this.page.waitForTimeout(3000);
+
+    //     const pageText = await this.page.evaluate(() => document.body.innerText).catch(() => '');
+
+    //     const dueDateMatch = pageText.match(/Due Date\s*:\s*([\d/.\-]+)/i);
+    //     const dueDate = dueDateMatch ? dueDateMatch[1].trim() : null;
+
+    //     this.log(`Due date: ${dueDate}`);
+
+    //     if (!dueDate) {
+    //         const debugPath = path.join(__dirname, `debug_duedate_${this.label}_${Date.now()}.png`);
+    //         await this.page.screenshot({ path: debugPath, fullPage: true }).catch(() => {});
+    //         this.log(`Could not find a Due Date on the page. Debug screenshot saved: ${debugPath}`);
     //     }
+
+    //     return { dueDate };
     // }
 
-    /**
-     * Turns a caught error (plus whatever the website itself is showing on
-     * screen, if anything) into a short, non-technical message suitable for
-     * reporting back through the API. Deliberately avoids selector/button-
-     * level detail (e.g. never says "could not click element X").
-     */
+    async confirmRenewalAndGetDueDate() {
+        return { dueDate: this._postRenewDueDate || null };
+    }
+    
+//     async getOnScreenErrorText() {
+//     try {
+//         return await this.page.evaluate(() => {
+//             // The site renders its real errors as:
+//             //   <span/icon class="...fa-warning...">⚠</span> Some error text
+//             //   (or a <i>/<span> containing U+26A0 / a triangle glyph)
+//             // …sitting at the top of the content area, ABOVE the orange
+//             // "Renew" header bar. The two defining traits are:
+//             //   (1) the message element is a SIBLING that comes AFTER a
+//             //       warning-icon element, and
+//             //   (2) its computed colour is red.
+//             //
+//             // We deliberately do NOT just walk the DOM for "any red leaf
+//             // node with a digit" — that was matching the brand-coloured
+//             // labels like "STB Type : NAGRA-CH02X001-HD" (returning
+//             // "001-HD") and "Renewal Amount :" further down the page.
+//             //
+//             // Real errors also are never bare status words like
+//             // EXPIRED / INACTIVE / ACTIVE.
+
+//             const IGNORE_EXACT = new Set([
+//                 'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
+//             ]);
+
+//             const isRed = (color) => {
+//                 if (!color) return false;
+//                 const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+//                 if (!m) return false;
+//                 const [r, g, b] = [ +m[1], +m[2], +m[3] ];
+//                 // red-ish: strong red channel, weak green AND blue
+//                 return r >= 150 && g <= 90 && b <= 90;
+//             };
+
+//             const isWarnIcon = (el) => {
+//                 if (!el) return false;
+//                 // Icon may be a font-awesome <i>, a <span>, or an <img>.
+//                 // Font-awesome warning uses class names like
+//                 // "fa-warning", "fa-exclamation-triangle", "fa-triangle-
+//                 // exclamation". Also accept a literal glyph in text.
+//                 const cls = (el.className || '') + ' ' +
+//                             (el.getAttribute && el.getAttribute('class') || '');
+//                 if (/\b(fa-warning|fa-exclamation-triangle|fa-triangle-exclamation|glyphicon-warning-sign|icon-warning|alert-warning)\b/i.test(cls)) {
+//                     return true;
+//                 }
+//                 const txt = (el.textContent || '').trim();
+//                 if (/^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C]$/.test(txt)) return true;
+//                 return false;
+//             };
+
+//             // Walk every candidate message element. For each one that is
+//             // red and non-trivial, look BACKWARDS among its siblings for a
+//             // warning icon. If found, that's a real error banner.
+//             const allEls = document.querySelectorAll('body *');
+//             for (const el of allEls) {
+//                 if (el.children.length > 0) continue; // leaf nodes only
+
+//                 const text = (el.innerText || el.textContent || '').trim();
+//                 if (!text) continue;
+//                 if (text.length < 3) continue;
+//                 if (IGNORE_EXACT.has(text.toUpperCase())) continue;
+
+//                 const style = window.getComputedStyle(el);
+//                 if (!isRed(style.color)) continue;
+
+//                 // Look at previous siblings for a warning icon.
+//                 let prev = el.previousElementSibling;
+//                 let foundIcon = false;
+//                 // allow a couple of hops in case there's a whitespace <br>
+//                 for (let hops = 0; prev && hops < 3; hops++) {
+//                     if (isWarnIcon(prev)) { foundIcon = true; break; }
+//                     // Also accept an icon nested inside the previous sibling
+//                     const nested = prev.querySelector && prev.querySelector(
+//                         '[class*="warning" i],[class*="fa-warning" i],[class*="exclamation" i]'
+//                     );
+//                     if (nested) { foundIcon = true; break; }
+//                     prev = prev.previousElementSibling;
+//                 }
+
+//                 // Fallback: the warning icon may be a parent's *first*
+//                 // child while our red text is a later child of the same
+//                 // parent (common with <div><span>⚠</span> text</div>).
+//                 if (!foundIcon && el.parentElement) {
+//                     const first = el.parentElement.firstElementChild;
+//                     if (first && first !== el && isWarnIcon(first)) {
+//                         foundIcon = true;
+//                     }
+//                 }
+
+//                 if (foundIcon) {
+//                     return text;
+//                 }
+//             }
+
+//             return null;
+//         });
+//     } catch (_) {
+//         return null;
+//     }
+// }
     async getOnScreenErrorText() {
     try {
         return await this.page.evaluate(() => {
-            // The site renders its real errors as:
-            //   <span/icon class="...fa-warning...">⚠</span> Some error text
-            //   (or a <i>/<span> containing U+26A0 / a triangle glyph)
-            // …sitting at the top of the content area, ABOVE the orange
-            // "Renew" header bar. The two defining traits are:
-            //   (1) the message element is a SIBLING that comes AFTER a
-            //       warning-icon element, and
-            //   (2) its computed colour is red.
-            //
-            // We deliberately do NOT just walk the DOM for "any red leaf
-            // node with a digit" — that was matching the brand-coloured
-            // labels like "STB Type : NAGRA-CH02X001-HD" (returning
-            // "001-HD") and "Renewal Amount :" further down the page.
-            //
-            // Real errors also are never bare status words like
-            // EXPIRED / INACTIVE / ACTIVE.
+            // -------- Strategy 1: code-style regex on body text --------
+            // Matches all known formats:
+            //   -1422:ORA-01422: exact fetch returns more than requested...
+            //   -1:Contracts can not be renewed or topup prior 7 days...
+            //   80741=Renewal is not allowed for disconnected contracts...
+            //   90157=This transaction is not allowed as the customer is...
+            // Accept ASCII ':' '=' '-' AND their fullwidth variants,
+            // because the site sometimes renders them differently.
+            const bodyText = document.body ? document.body.innerText : '';
+
+            const CODE_RE = /-?\d{3,}\s*[:：=＝\-]\s*[^\n]+/;
+            const codeMatch = bodyText.match(CODE_RE);
+            if (codeMatch) {
+                return codeMatch[0].trim();
+            }
+
+            // -------- Strategy 2: locate the warning banner element -----
+            // The site renders real errors as a red banner whose structure
+            // is basically:
+            //   <container>
+            //     <icon class="...warning...">⚠</icon>
+            //     <span>NNNNN=Some message</span>
+            //   </container>
+            // The message may be either a direct text node of the container
+            // OR a child <span>. We search for the WARNING ICON first, then
+            // walk up to its container and pull the sibling text, instead of
+            // walking leaves (which missed this case).
+
+            const isWarnIcon = (el) => {
+                if (!el || el.nodeType !== 1) return false;
+                const cls = ((el.className || '') + ' ' +
+                             (el.getAttribute && el.getAttribute('class') || ''));
+                if (/\b(fa-warning|fa-exclamation-triangle|fa-triangle-exclamation|glyphicon-warning-sign|icon-warning|alert-warning|fa-exclamation)\b/i.test(cls)) {
+                    return true;
+                }
+                const txt = (el.textContent || '').trim();
+                // literal warning glyph, alone
+                return /^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C]+$/.test(txt);
+            };
 
             const IGNORE_EXACT = new Set([
                 'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
             ]);
 
-            const isRed = (color) => {
-                if (!color) return false;
-                const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-                if (!m) return false;
-                const [r, g, b] = [ +m[1], +m[2], +m[3] ];
-                // red-ish: strong red channel, weak green AND blue
-                return r >= 150 && g <= 90 && b <= 90;
-            };
-
-            const isWarnIcon = (el) => {
-                if (!el) return false;
-                // Icon may be a font-awesome <i>, a <span>, or an <img>.
-                // Font-awesome warning uses class names like
-                // "fa-warning", "fa-exclamation-triangle", "fa-triangle-
-                // exclamation". Also accept a literal glyph in text.
-                const cls = (el.className || '') + ' ' +
-                            (el.getAttribute && el.getAttribute('class') || '');
-                if (/\b(fa-warning|fa-exclamation-triangle|fa-triangle-exclamation|glyphicon-warning-sign|icon-warning|alert-warning)\b/i.test(cls)) {
-                    return true;
-                }
-                const txt = (el.textContent || '').trim();
-                if (/^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C]$/.test(txt)) return true;
-                return false;
-            };
-
-            // Walk every candidate message element. For each one that is
-            // red and non-trivial, look BACKWARDS among its siblings for a
-            // warning icon. If found, that's a real error banner.
             const allEls = document.querySelectorAll('body *');
             for (const el of allEls) {
-                if (el.children.length > 0) continue; // leaf nodes only
+                if (!isWarnIcon(el)) continue;
 
-                const text = (el.innerText || el.textContent || '').trim();
-                if (!text) continue;
-                if (text.length < 3) continue;
-                if (IGNORE_EXACT.has(text.toUpperCase())) continue;
+                // Found a warning icon. The error message is either:
+                //  (a) text inside the icon's parent, alongside the icon,
+                //  (b) a following sibling of the icon,
+                //  (c) a following sibling of the icon's parent.
+                const candidates = [];
 
-                const style = window.getComputedStyle(el);
-                if (!isRed(style.color)) continue;
+                const parent = el.parentElement;
+                if (parent) {
+                    const parentText = (parent.innerText || parent.textContent || '').trim();
+                    const parentTextWithoutIcon = parentText
+                        .replace(/^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C\s]+/, '')
+                        .trim();
+                    if (parentTextWithoutIcon.length >= 3) candidates.push(parentTextWithoutIcon);
 
-                // Look at previous siblings for a warning icon.
-                let prev = el.previousElementSibling;
-                let foundIcon = false;
-                // allow a couple of hops in case there's a whitespace <br>
-                for (let hops = 0; prev && hops < 3; hops++) {
-                    if (isWarnIcon(prev)) { foundIcon = true; break; }
-                    // Also accept an icon nested inside the previous sibling
-                    const nested = prev.querySelector && prev.querySelector(
-                        '[class*="warning" i],[class*="fa-warning" i],[class*="exclamation" i]'
-                    );
-                    if (nested) { foundIcon = true; break; }
-                    prev = prev.previousElementSibling;
-                }
-
-                // Fallback: the warning icon may be a parent's *first*
-                // child while our red text is a later child of the same
-                // parent (common with <div><span>⚠</span> text</div>).
-                if (!foundIcon && el.parentElement) {
-                    const first = el.parentElement.firstElementChild;
-                    if (first && first !== el && isWarnIcon(first)) {
-                        foundIcon = true;
+                    let sib = parent.nextElementSibling;
+                    for (let i = 0; sib && i < 3; i++, sib = sib.nextElementSibling) {
+                        const t = (sib.innerText || sib.textContent || '').trim();
+                        if (t.length >= 3) candidates.push(t);
                     }
                 }
 
-                if (foundIcon) {
-                    return text;
+                let sib = el.nextElementSibling;
+                for (let i = 0; sib && i < 3; i++, sib = sib.nextElementSibling) {
+                    const t = (sib.innerText || sib.textContent || '').trim();
+                    if (t.length >= 3) candidates.push(t);
+                }
+
+                for (const c of candidates) {
+                    // ignore pure status badges
+                    if (IGNORE_EXACT.has(c.toUpperCase())) continue;
+
+                    // Accept if it has an error code OR looks like a sentence
+                    // (site's errors are always full phrases, never labels).
+                    const hasCode = CODE_RE.test(c);
+                    const looksLikeSentence = /\s/.test(c) && c.length >= 12;
+                    if (hasCode || looksLikeSentence) {
+                        return c.replace(/\s+/g, ' ').trim();
+                    }
                 }
             }
 
@@ -2456,80 +2584,6 @@ class LoginAutomation {
         return null;
     }
 }
-    // async getOnScreenErrorText() {
-    //     try {
-    //         return await this.page.evaluate(() => {
-    //             const bodyText = document.body ? document.body.innerText : '';
-
-    //             // Strategy 1: match any error-code style line, whatever separator
-    //             // the site uses between code and message. Covers all of these:
-    //             //   -1422:ORA-01422: exact fetch returns more than requested number of rows
-    //             //   -1:Contracts can not be renewed or topup prior 7 days to the contract end
-    //             //   80741=Renewal is not allowed for disconnected contracts before expiry
-    //             //   -1234 - some other message
-    //             // Requires at least 3 digits in the code so it never false-matches
-    //             // normal badges like "EXPIRED" or "INACTIVE".
-    //             const codeStyleMatch = bodyText.match(
-    //                 /-?\d{3,}\s*[:=\-]\s*[^\n]+/
-    //             );
-    //             if (codeStyleMatch) {
-    //                 return codeStyleMatch[0].trim();
-    //             }
-
-    //             // Strategy 2 (fallback): the site always renders its real errors
-    //             // as red text next to a warning triangle at the top of the content
-    //             // area. If the code-style regex above missed a new format the site
-    //             // introduces later, walk the DOM looking for that banner. We
-    //             // deliberately exclude anything that is just a status word like
-    //             // EXPIRED / INACTIVE / ACTIVE.
-    //             const walker = document.createTreeWalker(
-    //                 document.body,
-    //                 NodeFilter.SHOW_ELEMENT,
-    //                 null
-    //             );
-
-    //             const IGNORE_EXACT = new Set([
-    //                 'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
-    //             ]);
-
-    //             let el;
-    //             while ((el = walker.nextNode())) {
-    //                 const style = window.getComputedStyle(el);
-    //                 const color = style.color || '';
-    //                 const isRed =
-    //                     /rgb\(\s*2[0-5][0-9]\s*,\s*(0|[1-9]?\d|1[0-9]?\d)\s*,\s*(0|[1-9]?\d|1[0-9]?\d)\s*\)/.test(color) ||
-    //                     /rgb\(\s*255\s*,\s*0\s*,\s*0\s*\)/.test(color);
-
-    //                 if (!isRed) continue;
-
-    //                 // Only consider leaf-ish elements so we don't grab a big
-    //                 // container that also happens to be styled red.
-    //                 if (el.children.length > 0) continue;
-
-    //                 const text = (el.innerText || el.textContent || '').trim();
-    //                 if (!text) continue;
-    //                 if (text.length < 5) continue;
-    //                 if (IGNORE_EXACT.has(text.toUpperCase())) continue;
-
-    //                 // Must contain a digit somewhere - real error banners always
-    //                 // include an error code. This is the key guard that prevents
-    //                 // false-positives on decorative red text.
-    //                 // if (!/\d/.test(text)) continue;
-    //                 const hasWarnGlyph = /[\u26A0\u26A0\uFE0F\u25B2\u25B3]/.test(text);
-
-    //                 if (!/\d/.test(text) && !hasWarnGlyph) continue;
-
-    //                 return text;
-
-    //                 return text;
-    //             }
-
-    //             return null;
-    //         });
-    //     } catch (_) {
-    //         return null;
-    //     }
-    // }
     async buildFailureMessage(err) {
         const onScreenError = await this.getOnScreenErrorText();
         if (onScreenError) return onScreenError;
