@@ -2272,7 +2272,7 @@ class LoginAutomation {
         await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
         await renewBtn.click();
         this.log('Clicked the green "Renew" confirm button.');
-        await this.page.waitForTimeout(3000);
+        // await this.page.waitForTimeout(3000);
 
         // IMPORTANT: clicking "Renew" does NOT guarantee the pack was
         // actually renewed. The site can reject it and show a red error
