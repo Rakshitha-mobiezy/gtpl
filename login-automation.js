@@ -2292,10 +2292,22 @@ class LoginAutomation {
         // Wait for either the error banner to appear OR the search form
         // to come back (success path), whichever happens first.
         await Promise.race([
+            // this.page.waitForFunction(() => {
+            //     const t = document.body ? document.body.innerText : '';
+            //     return /-?\d{3,}\s*[:：=＝\-]\s*\S/.test(t);
+            // }, { timeout: 15000 }).catch(() => {}),
             this.page.waitForFunction(() => {
-                const t = document.body ? document.body.innerText : '';
-                return /-?\d{3,}\s*[:：=＝\-]\s*\S/.test(t);
-            }, { timeout: 15000 }).catch(() => {}),
+            const t = document.body ? document.body.innerText : '';
+            // strict: only the two real error-code shapes, and skip footer lines
+            const lines = t.split('\n');
+            for (const raw of lines) {
+                const line = raw.trim();
+                if (!line) continue;
+                if (/copyright|©|gtpl\s+hathway\s+ltd|all\s+rights\s+reserved/i.test(line)) continue;
+                if (/(?:-\d{1,6}\s*[:：]\s*\S|\b\d{5,6}\s*[=＝]\s*\S)/.test(line)) return true;
+            }
+            return false;
+        }, { timeout: 15000 }).catch(() => {}),
             this.page.waitForSelector(
                 'input[placeholder*="STB SERIAL" i], input[placeholder*="STB Serial" i]',
                 { timeout: 15000 }
@@ -2486,104 +2498,233 @@ class LoginAutomation {
 //         return null;
 //     }
 // }
+//     async getOnScreenErrorText() {
+//     try {
+//         return await this.page.evaluate(() => {
+//             // -------- Strategy 1: code-style regex on body text --------
+//             // Matches all known formats:
+//             //   -1422:ORA-01422: exact fetch returns more than requested...
+//             //   -1:Contracts can not be renewed or topup prior 7 days...
+//             //   80741=Renewal is not allowed for disconnected contracts...
+//             //   90157=This transaction is not allowed as the customer is...
+//             // Accept ASCII ':' '=' '-' AND their fullwidth variants,
+//             // because the site sometimes renders them differently.
+//             const bodyText = document.body ? document.body.innerText : '';
+
+//             const CODE_RE = /-?\d{3,}\s*[:：=＝\-]\s*[^\n]+/;
+//             const codeMatch = bodyText.match(CODE_RE);
+//             if (codeMatch) {
+//                 return codeMatch[0].trim();
+//             }
+
+//             // -------- Strategy 2: locate the warning banner element -----
+//             // The site renders real errors as a red banner whose structure
+//             // is basically:
+//             //   <container>
+//             //     <icon class="...warning...">⚠</icon>
+//             //     <span>NNNNN=Some message</span>
+//             //   </container>
+//             // The message may be either a direct text node of the container
+//             // OR a child <span>. We search for the WARNING ICON first, then
+//             // walk up to its container and pull the sibling text, instead of
+//             // walking leaves (which missed this case).
+
+//             const isWarnIcon = (el) => {
+//                 if (!el || el.nodeType !== 1) return false;
+//                 const cls = ((el.className || '') + ' ' +
+//                              (el.getAttribute && el.getAttribute('class') || ''));
+//                 if (/\b(fa-warning|fa-exclamation-triangle|fa-triangle-exclamation|glyphicon-warning-sign|icon-warning|alert-warning|fa-exclamation)\b/i.test(cls)) {
+//                     return true;
+//                 }
+//                 const txt = (el.textContent || '').trim();
+//                 // literal warning glyph, alone
+//                 return /^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C]+$/.test(txt);
+//             };
+
+//             const IGNORE_EXACT = new Set([
+//                 'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
+//             ]);
+
+//             const allEls = document.querySelectorAll('body *');
+//             for (const el of allEls) {
+//                 if (!isWarnIcon(el)) continue;
+
+//                 // Found a warning icon. The error message is either:
+//                 //  (a) text inside the icon's parent, alongside the icon,
+//                 //  (b) a following sibling of the icon,
+//                 //  (c) a following sibling of the icon's parent.
+//                 const candidates = [];
+
+//                 const parent = el.parentElement;
+//                 if (parent) {
+//                     const parentText = (parent.innerText || parent.textContent || '').trim();
+//                     const parentTextWithoutIcon = parentText
+//                         .replace(/^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C\s]+/, '')
+//                         .trim();
+//                     if (parentTextWithoutIcon.length >= 3) candidates.push(parentTextWithoutIcon);
+
+//                     let sib = parent.nextElementSibling;
+//                     for (let i = 0; sib && i < 3; i++, sib = sib.nextElementSibling) {
+//                         const t = (sib.innerText || sib.textContent || '').trim();
+//                         if (t.length >= 3) candidates.push(t);
+//                     }
+//                 }
+
+//                 let sib = el.nextElementSibling;
+//                 for (let i = 0; sib && i < 3; i++, sib = sib.nextElementSibling) {
+//                     const t = (sib.innerText || sib.textContent || '').trim();
+//                     if (t.length >= 3) candidates.push(t);
+//                 }
+
+//                 for (const c of candidates) {
+//                     // ignore pure status badges
+//                     if (IGNORE_EXACT.has(c.toUpperCase())) continue;
+
+//                     // Accept if it has an error code OR looks like a sentence
+//                     // (site's errors are always full phrases, never labels).
+//                     const hasCode = CODE_RE.test(c);
+//                     const looksLikeSentence = /\s/.test(c) && c.length >= 12;
+//                     if (hasCode || looksLikeSentence) {
+//                         return c.replace(/\s+/g, ' ').trim();
+//                     }
+//                 }
+//             }
+
+//             return null;
+//         });
+//     } catch (_) {
+//         return null;
+//     }
+// }
+
     async getOnScreenErrorText() {
-    try {
-        return await this.page.evaluate(() => {
-            // -------- Strategy 1: code-style regex on body text --------
-            // Matches all known formats:
-            //   -1422:ORA-01422: exact fetch returns more than requested...
-            //   -1:Contracts can not be renewed or topup prior 7 days...
-            //   80741=Renewal is not allowed for disconnected contracts...
-            //   90157=This transaction is not allowed as the customer is...
-            // Accept ASCII ':' '=' '-' AND their fullwidth variants,
-            // because the site sometimes renders them differently.
-            const bodyText = document.body ? document.body.innerText : '';
+        try {
+            return await this.page.evaluate(() => {
+                const bodyText = document.body ? document.body.innerText : '';
 
-            const CODE_RE = /-?\d{3,}\s*[:：=＝\-]\s*[^\n]+/;
-            const codeMatch = bodyText.match(CODE_RE);
-            if (codeMatch) {
-                return codeMatch[0].trim();
-            }
+                // Hard-exclude anything that looks like the page footer.
+                // The footer reads e.g. "Copyright © 2026 - GTPL Hathway
+                // Ltd. - 72" and was previously being mistaken for an
+                // error because its numeric/separator shape loosely
+                // resembled the site's error codes.
+                const isFooterLine = (s) =>
+                    /copyright|©|\(c\)\s*\d{4}|gtpl\s+hathway\s+ltd|all\s+rights\s+reserved/i.test(s);
 
-            // -------- Strategy 2: locate the warning banner element -----
-            // The site renders real errors as a red banner whose structure
-            // is basically:
-            //   <container>
-            //     <icon class="...warning...">⚠</icon>
-            //     <span>NNNNN=Some message</span>
-            //   </container>
-            // The message may be either a direct text node of the container
-            // OR a child <span>. We search for the WARNING ICON first, then
-            // walk up to its container and pull the sibling text, instead of
-            // walking leaves (which missed this case).
+                // ---- Strategy 1: strict error-code regex on body text ----
+                // Real banners we've observed:
+                //   -1422:ORA-01422: exact fetch returns more than requested number of rows
+                //   -1:Contracts can not be renewed or topup prior 7 days to the contract end
+                //   80741=Renewal is not allowed for disconnected contracts before expiry
+                //   90157=This transaction is not allowed as the customer is in collection stage
+                // Two strict shapes only:
+                //   (a) leading minus + 1-6 digits + colon
+                //   (b) 5-6 digit numeric code + equals
+                // A bare "NNNN - text" pattern is NOT allowed (that's how
+                // the footer "2026 - GTPL Hathway Ltd. - 72" slipped through).
+                const CODE_RE = /(?:-\d{1,6}\s*[:：]\s*[^\n]+|\b\d{5,6}\s*[=＝]\s*[^\n]+)/;
 
-            const isWarnIcon = (el) => {
-                if (!el || el.nodeType !== 1) return false;
-                const cls = ((el.className || '') + ' ' +
-                             (el.getAttribute && el.getAttribute('class') || ''));
-                if (/\b(fa-warning|fa-exclamation-triangle|fa-triangle-exclamation|glyphicon-warning-sign|icon-warning|alert-warning|fa-exclamation)\b/i.test(cls)) {
-                    return true;
+                // Split bodyText by lines, find the first line matching the
+                // code pattern AND not looking like the footer.
+                for (const rawLine of bodyText.split('\n')) {
+                    const line = rawLine.trim();
+                    if (!line) continue;
+                    if (isFooterLine(line)) continue;
+                    const m = line.match(CODE_RE);
+                    if (m) return m[0].trim();
                 }
-                const txt = (el.textContent || '').trim();
-                // literal warning glyph, alone
-                return /^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C]+$/.test(txt);
-            };
 
-            const IGNORE_EXACT = new Set([
-                'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
-            ]);
+                // ---- Strategy 2: warning-icon locator, scoped to the ----
+                // ---- top of the content area (above the orange Renew ----
+                // ---- bar), where the real banner always lives.        ----
 
-            const allEls = document.querySelectorAll('body *');
-            for (const el of allEls) {
-                if (!isWarnIcon(el)) continue;
+                const isWarnIcon = (el) => {
+                    if (!el || el.nodeType !== 1) return false;
+                    const cls = ((el.className || '') + ' ' +
+                                 (el.getAttribute && el.getAttribute('class') || ''));
+                    if (/\b(fa-warning|fa-exclamation-triangle|fa-triangle-exclamation|glyphicon-warning-sign|icon-warning|alert-warning|fa-exclamation)\b/i.test(cls)) {
+                        return true;
+                    }
+                    const txt = (el.textContent || '').trim();
+                    return /^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C]+$/.test(txt);
+                };
 
-                // Found a warning icon. The error message is either:
-                //  (a) text inside the icon's parent, alongside the icon,
-                //  (b) a following sibling of the icon,
-                //  (c) a following sibling of the icon's parent.
-                const candidates = [];
+                // Find the orange "Renew" bar — it's the visual boundary
+                // between the error zone (above) and the search form
+                // (below). Any element whose DOM position is AFTER that
+                // bar is not part of the banner zone and must be ignored.
+                // Identify it by its text content being exactly "Renew"
+                // and its computed background being orange-ish.
+                let renewBar = null;
+                for (const el of document.querySelectorAll('body *')) {
+                    const t = (el.innerText || '').trim();
+                    if (t !== 'Renew') continue;
+                    const bg = window.getComputedStyle(el).backgroundColor || '';
+                    const m = bg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+                    if (!m) continue;
+                    const [r, g, b] = [ +m[1], +m[2], +m[3] ];
+                    // orange: strong red, mid green, low blue
+                    if (r > 180 && g > 90 && g < 200 && b < 120) { renewBar = el; break; }
+                }
 
-                const parent = el.parentElement;
-                if (parent) {
-                    const parentText = (parent.innerText || parent.textContent || '').trim();
-                    const parentTextWithoutIcon = parentText
-                        .replace(/^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C\s]+/, '')
-                        .trim();
-                    if (parentTextWithoutIcon.length >= 3) candidates.push(parentTextWithoutIcon);
+                const isBeforeRenewBar = (el) => {
+                    if (!renewBar) return true; // if we couldn't find the bar, don't restrict
+                    const pos = renewBar.compareDocumentPosition(el);
+                    // el comes before renewBar in document order
+                    return !!(pos & Node.DOCUMENT_POSITION_PRECEDING) ||
+                           !!(pos & Node.DOCUMENT_POSITION_CONTAINED_BY);
+                };
 
-                    let sib = parent.nextElementSibling;
+                const IGNORE_EXACT = new Set([
+                    'EXPIRED', 'INACTIVE', 'ACTIVE', 'SUSPENDED', 'DISCONNECTED',
+                ]);
+
+                for (const el of document.querySelectorAll('body *')) {
+                    if (!isWarnIcon(el)) continue;
+                    if (!isBeforeRenewBar(el)) continue;
+
+                    const candidates = [];
+
+                    const parent = el.parentElement;
+                    if (parent) {
+                        const pt = (parent.innerText || parent.textContent || '').trim();
+                        const ptNoIcon = pt.replace(/^[\u26A0\u26A0\uFE0F\u25B2\u25B3\u2757\u203C\s]+/, '').trim();
+                        if (ptNoIcon.length >= 3) candidates.push(ptNoIcon);
+
+                        let sib = parent.nextElementSibling;
+                        for (let i = 0; sib && i < 3; i++, sib = sib.nextElementSibling) {
+                            const t = (sib.innerText || sib.textContent || '').trim();
+                            if (t.length >= 3) candidates.push(t);
+                        }
+                    }
+
+                    let sib = el.nextElementSibling;
                     for (let i = 0; sib && i < 3; i++, sib = sib.nextElementSibling) {
                         const t = (sib.innerText || sib.textContent || '').trim();
                         if (t.length >= 3) candidates.push(t);
                     }
-                }
 
-                let sib = el.nextElementSibling;
-                for (let i = 0; sib && i < 3; i++, sib = sib.nextElementSibling) {
-                    const t = (sib.innerText || sib.textContent || '').trim();
-                    if (t.length >= 3) candidates.push(t);
-                }
+                    for (const c of candidates) {
+                        const oneLine = c.replace(/\s+/g, ' ').trim();
+                        if (IGNORE_EXACT.has(oneLine.toUpperCase())) continue;
+                        if (isFooterLine(oneLine)) continue;
 
-                for (const c of candidates) {
-                    // ignore pure status badges
-                    if (IGNORE_EXACT.has(c.toUpperCase())) continue;
+                        const hasCode = CODE_RE.test(oneLine);
+                        const looksLikeSentence = /\s/.test(oneLine) && oneLine.length >= 12;
+                        const knownPhrase = /(renewal is not allowed|transaction is not allowed|no package for this customer|contracts can not be renewed|exact fetch returns)/i.test(oneLine);
 
-                    // Accept if it has an error code OR looks like a sentence
-                    // (site's errors are always full phrases, never labels).
-                    const hasCode = CODE_RE.test(c);
-                    const looksLikeSentence = /\s/.test(c) && c.length >= 12;
-                    if (hasCode || looksLikeSentence) {
-                        return c.replace(/\s+/g, ' ').trim();
+                        if (hasCode || looksLikeSentence || knownPhrase) {
+                            return oneLine;
+                        }
                     }
                 }
-            }
 
+                return null;
+            });
+        } catch (_) {
             return null;
-        });
-    } catch (_) {
-        return null;
+        }
     }
-}
+
     async buildFailureMessage(err) {
         const onScreenError = await this.getOnScreenErrorText();
         if (onScreenError) return onScreenError;
