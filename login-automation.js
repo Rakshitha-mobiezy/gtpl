@@ -2342,7 +2342,7 @@ class LoginAutomation {
             this.log('Could not read the pre-renewal due date - falling back to banner-only check.');
             // Can't compare; trust the absence of a banner.
         } else if (!postRenewDueDate) {
-            throw new Error('Could not read the updated due date after renewal.');
+            throw new Error('renewal failed check your wallet balance or customer details');
         } else if (postRenewDueDate === preRenewDueDate) {
             // No banner, but the due date didn't move. On this site that
             // means the renewal silently didn't go through.
